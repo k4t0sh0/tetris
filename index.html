@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>HTML Tetris</title>
+  <title>HTML Tetris with Group Cycle</title>
   <style>
     :root{--cell:28px}
     body{font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif; display:flex; gap:20px; align-items:flex-start; padding:20px;}
     canvas{background:#111; image-rendering:pixelated; border-radius:6px}
-    #ui{min-width:180px}
+    #ui{min-width:200px}
     .panel{background:#0f1720; color:#e6eef8; padding:12px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.5)}
     h1{font-size:18px; margin:0 0 8px}
     .small{font-size:13px; opacity:.9}
@@ -21,31 +21,30 @@
   <canvas id="board" width="10" height="20" style="width:calc(var(--cell)*10);height:calc(var(--cell)*20)"></canvas>
   <div id="ui">
     <div class="panel">
-      <h1>HTML テトリス</h1>
+      <h1>HTML テトリス（7-Bag）</h1>
       <div class="small grid">
-        <div><span class="label">操作</span><br>↑: ハードドロップ / ↓: ソフトドロップ / スペース: 回転 (時計回り)</div>
-        <div><span class="label">目的</span><br>ラインを揃えて消す</div>
+        <div><span class="label">操作</span><br>↑: ハードドロップ / ↓: ソフトドロップ / スペース: 回転 / C: ホールド</div>
         <div><span class="label">スコア</span><div id="score">0</div></div>
         <div><span class="label">レベル</span><div id="level">1</div></div>
         <div><span class="label">次のピース</span><canvas id="next" width="4" height="4" style="width:calc(var(--cell)*4);height:calc(var(--cell)*4);"></canvas></div>
+        <div><span class="label">ホールド</span><canvas id="hold" width="4" height="4" style="width:calc(var(--cell)*4);height:calc(var(--cell)*4);"></canvas></div>
         <div><button id="start">スタート / リスタート</button> <button id="pause">一時停止</button></div>
       </div>
     </div>
   </div>
 
 <script>
-// --- 基本設定 ---
-const COLS = 10, ROWS = 20, CELL = 28;
+const COLS = 10, ROWS = 20;
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
-canvas.width = COLS; canvas.height = ROWS;
 ctx.imageSmoothingEnabled = false;
+canvas.width = COLS; canvas.height = ROWS;
 
 const nextCanvas = document.getElementById('next');
 const nctx = nextCanvas.getContext('2d');
-nextCanvas.width = 4; nextCanvas.height = 4;
+const holdCanvas = document.getElementById('hold');
+const hctx = holdCanvas.getContext('2d');
 
-// 色とテトロミノ定義 (4x4ブロック定義)
 const TETROMINOES = {
   I: {color:'#5ce1ff', blocks:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]},
   J: {color:'#3b82f6', blocks:[[1,0,0],[1,1,1],[0,0,0]]},
@@ -57,257 +56,177 @@ const TETROMINOES = {
 };
 const NAMES = Object.keys(TETROMINOES);
 
-// ゲーム状態
-let board, current, nextPiece, gameInterval, dropCounter=0, dropInterval=1000, score=0, level=1, isRunning=false, isPaused=false;
+let board, current, nextPiece, holdPiece = null, canHold = true, bag = [];
+let score=0, level=1, dropInterval=1000, dropCounter=0, isRunning=false, isPaused=false;
 
-function createBoard(){
-  board = Array.from({length:ROWS},()=>Array(COLS).fill(0));
+function createBoard(){ board = Array.from({length:ROWS},()=>Array(COLS).fill(0)); }
+
+function refillBag(){
+  bag = NAMES.slice();
+  for(let i=bag.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [bag[i],bag[j]]=[bag[j],bag[i]];
+  }
 }
-
-// ピース生成
-function randomPiece(){
-  const name = NAMES[Math.floor(Math.random()*NAMES.length)];
+function nextPieceFromBag(){
+  if(bag.length===0) refillBag();
+  const name = bag.pop();
   const def = TETROMINOES[name];
-  // normalize to matrix
   const mat = def.blocks.map(r=>r.slice());
-  return {name, mat, x:Math.floor((COLS - mat[0].length)/2), y: - (mat.length - 1), color:def.color};
+  return {name,mat,x:Math.floor((COLS-mat[0].length)/2),y:-(mat.length-1),color:def.color};
 }
 
 function rotate(matrix){
-  // 時計回り
-  const N = matrix.length;
-  const res = Array.from({length:N},()=>Array(N).fill(0));
+  const N=matrix.length;
+  const res=Array.from({length:N},()=>Array(N).fill(0));
   for(let r=0;r<N;r++)for(let c=0;c<N;c++)res[c][N-1-r]=matrix[r][c];
-  // trim empty rows/cols
   return trimMatrix(res);
 }
-
 function trimMatrix(mat){
-  // remove empty outer rows/cols to keep compact shapes
   let top=0,bottom=mat.length-1,left=0,right=mat[0].length-1;
-  while(top<=bottom && mat[top].every(v=>v==0)) top++;
-  while(bottom>=top && mat[bottom].every(v=>v==0)) bottom--;
-  while(left<=right && mat.every(row=>row[left]==0)) left++;
-  while(right>=left && mat.every(row=>row[right]==0)) right--;
-  const out = [];
-  for(let r=top;r<=bottom;r++) out.push(mat[r].slice(left,right+1));
-  return out.length?out:[[0]];
+  while(top<=bottom && mat[top].every(v=>!v)) top++;
+  while(bottom>=top && mat[bottom].every(v=>!v)) bottom--;
+  while(left<=right && mat.every(row=>!row[left])) left++;
+  while(right>=left && mat.every(row=>!row[right])) right--;
+  const out=[];for(let r=top;r<=bottom;r++) out.push(mat[r].slice(left,right+1));
+  return out;
 }
 
-function collide(board, piece, offsetX=0, offsetY=0){
-  const m = piece.mat;
-  for(let r=0;r<m.length;r++){
-    for(let c=0;c<m[r].length;c++){
-      if(m[r][c]){
-        const x = piece.x + c + offsetX;
-        const y = piece.y + r + offsetY;
-        if(x<0 || x>=COLS || y>=ROWS) return true;
-        if(y>=0 && board[y][x]) return true;
-      }
+function collide(board,piece,ox=0,oy=0){
+  const m=piece.mat;
+  for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++){
+    if(m[r][c]){
+      const x=piece.x+c+ox, y=piece.y+r+oy;
+      if(x<0||x>=COLS||y>=ROWS) return true;
+      if(y>=0 && board[y][x]) return true;
     }
   }
   return false;
 }
-
 function merge(board,piece){
-  const m = piece.mat;
-  for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++){
-    if(m[r][c]){
-      const x = piece.x + c;
-      const y = piece.y + r;
-      if(y>=0) board[y][x] = piece.color;
-    }
+  const m=piece.mat;
+  for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++)if(m[r][c]){
+    const x=piece.x+c,y=piece.y+r;
+    if(y>=0) board[y][x]=piece.color;
   }
 }
-
 function sweep(){
   let lines=0;
-  outer: for(let r=ROWS-1;r>=0;r--){
+  for(let r=ROWS-1;r>=0;r--){
     if(board[r].every(c=>c)){
-      board.splice(r,1);
-      board.unshift(Array(COLS).fill(0));
-      lines++;
-      r++; // recheck same row index after shift
+      board.splice(r,1);board.unshift(Array(COLS).fill(0));lines++;r++;
     }
   }
   if(lines>0){
-    score += (lines===1?100:lines===2?300:lines===3?500:800) * level;
-    level = Math.floor(score/1000)+1;
-    dropInterval = Math.max(100,1000 - (level-1)*100);
+    score+=(lines===1?100:lines===2?300:lines===3?500:800)*level;
+    level=Math.floor(score/1000)+1;
+    dropInterval=Math.max(100,1000-(level-1)*100);
     updateUI();
   }
 }
 
 function spawn(){
-  current = nextPiece || randomPiece();
-  nextPiece = randomPiece();
-  current.x = Math.floor((COLS - current.mat[0].length)/2);
-  current.y = - (current.mat.length - 1);
+  current=nextPiece||nextPieceFromBag();
+  nextPiece=nextPieceFromBag();
+  current.x=Math.floor((COLS-current.mat[0].length)/2);
+  current.y=-(current.mat.length-1);
+  canHold=true;
   if(collide(board,current,0,0)){
-    // game over
-    stop();
-    alert('ゲームオーバー\nスコア: '+score);
+    stop();alert('ゲームオーバー\nスコア: '+score);
   }
 }
 
-function hardDrop(){
-  while(!collide(board,current,0,1)) current.y++;
-  lockPiece();
-}
-
-function softDrop(){
-  if(!collide(board,current,0,1)){
-    current.y++;
-  } else {
-    lockPiece();
-  }
-}
-
-function lockPiece(){
-  merge(board,current);
-  sweep();
-  spawn();
-}
-
-function move(dx){
-  if(!collide(board,current,dx,0)) current.x += dx;
-}
-
+function hardDrop(){ while(!collide(board,current,0,1)) current.y++; lockPiece(); }
+function softDrop(){ if(!collide(board,current,0,1)) current.y++; else lockPiece(); }
+function lockPiece(){ merge(board,current);sweep();spawn(); }
+function move(dx){ if(!collide(board,current,dx,0)) current.x+=dx; }
 function rotateCurrent(){
-  const cloned = {...current, mat: rotate(padMatrix(current.mat))};
-  // try wall kicks simple: try offsets 0, -1, +1, -2, +2
-  const kicks = [0,-1,1,-2,2];
-  for(const k of kicks){
-    if(!collide(board,cloned,k,0)){
-      current.mat = cloned.mat;
-      current.x += k;
-      return;
-    }
-  }
+  const cloned={...current,mat:rotate(pad(current.mat))};
+  const kicks=[0,-1,1,-2,2];
+  for(const k of kicks){if(!collide(board,cloned,k,0)){current.mat=cloned.mat;current.x+=k;return;}}
 }
-
-function padMatrix(mat){
-  // make square for rotation
-  const N = Math.max(mat.length, mat[0].length);
-  const out = Array.from({length:N},()=>Array(N).fill(0));
-  const rOff = Math.floor((N - mat.length)/2);
-  const cOff = Math.floor((N - mat[0].length)/2);
+function pad(mat){
+  const N=Math.max(mat.length,mat[0].length);
+  const out=Array.from({length:N},()=>Array(N).fill(0));
+  const rOff=Math.floor((N-mat.length)/2),cOff=Math.floor((N-mat[0].length)/2);
   for(let r=0;r<mat.length;r++)for(let c=0;c<mat[r].length;c++)out[r+rOff][c+cOff]=mat[r][c];
   return out;
 }
 
+function hold(){
+  if(!canHold) return;
+  if(!holdPiece){ holdPiece={...current,mat:current.mat.map(r=>r.slice())}; spawn(); }
+  else{
+    const temp=holdPiece; holdPiece={...current,mat:current.mat.map(r=>r.slice())};
+    current={...temp,mat:temp.mat.map(r=>r.slice()),x:Math.floor((COLS-temp.mat[0].length)/2),y:-(temp.mat.length-1)};
+    if(collide(board,current,0,0)) current=nextPieceFromBag();
+  }
+  canHold=false;
+}
+
+function ghostY(){
+  let gy=current.y;
+  while(!collide(board,current,0,gy-current.y+1)) gy++;
+  return gy;
+}
+
 function dropTick(){
-  if(isRunning && !isPaused){
-    dropCounter++;
-    if(dropCounter * 16 >= dropInterval){ // approx using RAF step - but simplified timer
-      dropCounter = 0;
-      if(!collide(board,current,0,1)){
-        current.y++;
-      } else {
-        lockPiece();
-      }
-    }
-  }
+  if(isRunning&&!isPaused){dropCounter+=16;if(dropCounter>=dropInterval){dropCounter=0;softDrop();}}
 }
-
 function updateUI(){
-  document.getElementById('score').textContent = score;
-  document.getElementById('level').textContent = level;
+  document.getElementById('score').textContent=score;
+  document.getElementById('level').textContent=level;
 }
 
-// 描画
 function drawCell(x,y,color,context){
-  context.fillStyle = color || '#222';
-  context.fillRect(x,y,1,1);
-  context.strokeStyle = 'rgba(0,0,0,.3)';
-  context.lineWidth = 0.03;
-  context.strokeRect(x+0.02,y+0.02,0.96,0.96);
+  context.fillStyle=color||'#222';context.fillRect(x,y,1,1);
+  context.strokeStyle='rgba(0,0,0,.3)';context.lineWidth=0.03;context.strokeRect(x+0.02,y+0.02,0.96,0.96);
 }
-
 function draw(){
-  // board
   ctx.clearRect(0,0,COLS,ROWS);
-  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
-    if(board[r][c]) drawCell(c,r,board[r][c],ctx);
-    else {
-      // faint grid
-      ctx.fillStyle = '#07090a'; ctx.fillRect(c,r,1,1);
-    }
-  }
-  // current piece
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++)drawCell(c,r,board[r][c]||'#07090a',ctx);
   if(current){
-    const m = current.mat;
-    for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++){
-      if(m[r][c]){
-        const x = current.x + c;
-        const y = current.y + r;
-        if(y>=0) drawCell(x,y,current.color,ctx);
-      }
+    const gy=ghostY();
+    for(let r=0;r<current.mat.length;r++)for(let c=0;c<current.mat[r].length;c++)if(current.mat[r][c]){
+      const x=current.x+c,y=current.y+r;
+      const yGhost=gy+r;
+      if(yGhost>=0) drawCell(x,yGhost,'rgba(255,255,255,0.1)',ctx);
+      if(y>=0) drawCell(x,y,current.color,ctx);
     }
   }
-  // next
   nctx.clearRect(0,0,4,4);
   if(nextPiece){
-    const m = nextPiece.mat;
-    const offX = Math.floor((4 - m[0].length)/2);
-    const offY = Math.floor((4 - m.length)/2);
-    for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++){
-      if(m[r][c]) drawCell(c+offX,r+offY,nextPiece.color,nctx);
-    }
+    const m=nextPiece.mat,offX=Math.floor((4-m[0].length)/2),offY=Math.floor((4-m.length)/2);
+    for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++)if(m[r][c]) drawCell(c+offX,r+offY,nextPiece.color,nctx);
+  }
+  hctx.clearRect(0,0,4,4);
+  if(holdPiece){
+    const m=holdPiece.mat,offX=Math.floor((4-m[0].length)/2),offY=Math.floor((4-m.length)/2);
+    for(let r=0;r<m.length;r++)for(let c=0;c<m[r].length;c++)if(m[r][c]) drawCell(c+offX,r+offY,holdPiece.color,hctx);
   }
 }
 
-// メインループ
 let lastTime=0;
-function loop(time=0){
-  const delta = time - lastTime;
-  lastTime = time;
-  dropTick();
-  draw();
-  requestAnimationFrame(loop);
-}
+function loop(time=0){const delta=time-lastTime;lastTime=time;dropTick();draw();requestAnimationFrame(loop);}
 
-// 入力
 window.addEventListener('keydown',e=>{
-  if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp','Space'].includes(e.code)) e.preventDefault();
+  if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp','Space','KeyC'].includes(e.code)) e.preventDefault();
   if(!isRunning) return;
   if(e.code==='ArrowLeft') move(-1);
   else if(e.code==='ArrowRight') move(1);
-  else if(e.code==='ArrowDown') { // ソフトドロップ
-    softDrop();
-  }
-  else if(e.code==='ArrowUp') { // ハードドロップ
-    hardDrop();
-  }
-  else if(e.code==='Space') { // スペース: 回転（時計回り）
-    rotateCurrent();
-  }
+  else if(e.code==='ArrowDown') softDrop();
+  else if(e.code==='ArrowUp') hardDrop();
+  else if(e.code==='Space') rotateCurrent();
+  else if(e.code==='KeyC') hold();
 });
 
-// スタート／停止
-function start(){
-  createBoard();
-  score=0; level=1; dropInterval=1000; updateUI();
-  nextPiece = randomPiece();
-  spawn();
-  isRunning = true; isPaused=false; lastTime=0;
-}
+function start(){createBoard();score=0;level=1;dropInterval=1000;updateUI();refillBag();nextPiece=nextPieceFromBag();spawn();isRunning=true;isPaused=false;}
+function stop(){isRunning=false;}
+function togglePause(){if(!isRunning)return;isPaused=!isPaused;document.getElementById('pause').textContent=isPaused?'再開':'一時停止';}
 
-function stop(){
-  isRunning=false;
-}
+document.getElementById('start').addEventListener('click',()=>start());
+document.getElementById('pause').addEventListener('click',()=>togglePause());
 
-function togglePause(){
-  if(!isRunning) return;
-  isPaused = !isPaused;
-  document.getElementById('pause').textContent = isPaused ? '再開' : '一時停止';
-}
-
-// UIボタン
-document.getElementById('start').addEventListener('click',()=>{start();});
-document.getElementById('pause').addEventListener('click',()=>{togglePause();});
-
-// 初期化
 start();
 requestAnimationFrame(loop);
 </script>
